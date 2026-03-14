@@ -37,7 +37,13 @@ def api_standings():
 
 
 def scrape_web_standings(page: Page) -> list[dict]:
-    """Navigate to F1 website and scrape the full standings table."""
+    """Navigate to F1 website and scrape the full standings table.
+
+    NOTE: The name cell contains first/last name in separate child <span>
+    elements. Using cells.nth(1).inner_text() merges them without a space,
+    producing 'MaxVerstappen'. Selecting the <a> link instead gives the full
+    correctly-spaced name as its accessible text.
+    """
     page.goto(BASE_URL_WEB)
     rows = page.locator("table tbody tr")
     result = []
@@ -46,7 +52,7 @@ def scrape_web_standings(page: Page) -> list[dict]:
         result.append(
             {
                 "position": int(cells.nth(0).inner_text().strip()),
-                "name": normalize_name(cells.nth(1).inner_text().strip()),
+                "name": normalize_name(cells.nth(1).locator("a").inner_text().strip()),
                 "points": cells.nth(4).inner_text().strip(),
             }
         )
