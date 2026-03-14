@@ -8,13 +8,28 @@ BASE_URL_WEB = "https://www.formula1.com/en/results/2023/drivers"
 
 
 def normalize_name(name: str) -> str:
-    """Normalize accented characters for comparison (e.g. Perez vs Pérez)."""
+    """Normalize accented characters for comparison (e.g. Perez vs Perez)."""
     return (
         unicodedata.normalize("NFD", name)
         .encode("ascii", "ignore")
         .decode("utf-8")
         .strip()
     )
+
+
+def name_from_href(href: str) -> str:
+    """Extract driver full name from the URL slug.
+
+    e.g. '/en/results/2023/drivers/MAXVER01/max-verstappen'
+         -> 'Max Verstappen'
+
+    This avoids relying on inner_text() which fails to insert the
+    space between the first-name and last-name <span> elements
+    because they are separated by a CSS-rendered &nbsp; that Python's
+    Playwright does not resolve in headless mode.
+    """
+    slug = href.rstrip("/").split("/")[-1]   # 'max-verstappen'
+    return " ".join(word.capitalize() for word in slug.split("-"))
 
 
 @pytest.fixture(scope="module")
@@ -39,20 +54,20 @@ def api_standings():
 def scrape_web_standings(page: Page) -> list[dict]:
     """Navigate to F1 website and scrape the full standings table.
 
-    NOTE: The name cell contains first/last name in separate child <span>
-    elements. Using cells.nth(1).inner_text() merges them without a space,
-    producing 'MaxVerstappen'. Selecting the <a> link instead gives the full
-    correctly-spaced name as its accessible text.
+    Driver name is extracted from the <a> href slug rather than inner_text()
+    because the site renders first/last name in separate <span> elements
+    joined by &nbsp; — which Python Playwright does not resolve into a space.
     """
     page.goto(BASE_URL_WEB)
     rows = page.locator("table tbody tr")
     result = []
     for i in range(rows.count()):
         cells = rows.nth(i).locator("td")
+        href = cells.nth(1).locator("a").get_attribute("href")
         result.append(
             {
                 "position": int(cells.nth(0).inner_text().strip()),
-                "name": normalize_name(cells.nth(1).locator("a").inner_text().strip()),
+                "name": normalize_name(name_from_href(href)),
                 "points": cells.nth(4).inner_text().strip(),
             }
         )
