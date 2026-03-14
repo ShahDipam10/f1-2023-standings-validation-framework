@@ -8,28 +8,32 @@ BASE_URL_WEB = "https://www.formula1.com/en/results/2023/drivers"
 
 
 def normalize_name(name: str) -> str:
-    """Normalize accented characters for comparison (e.g. Perez vs Perez)."""
+    """Strip accents and lowercase for case-insensitive comparison.
+
+    Handles:
+    - Accents:    Pérez  -> perez
+    - Particles:  de Vries / De Vries -> de vries  (both match)
+    """
     return (
         unicodedata.normalize("NFD", name)
         .encode("ascii", "ignore")
         .decode("utf-8")
         .strip()
+        .lower()
     )
 
 
 def name_from_href(href: str) -> str:
-    """Extract driver full name from the URL slug.
+    """Extract driver name from the URL slug.
 
     e.g. '/en/results/2023/drivers/MAXVER01/max-verstappen'
-         -> 'Max Verstappen'
+         -> 'max verstappen'
 
-    This avoids relying on inner_text() which fails to insert the
-    space between the first-name and last-name <span> elements
-    because they are separated by a CSS-rendered &nbsp; that Python's
-    Playwright does not resolve in headless mode.
+    Using the href avoids inner_text() which drops the &nbsp; space
+    between first/last name spans in Python's headless Playwright.
     """
     slug = href.rstrip("/").split("/")[-1]   # 'max-verstappen'
-    return " ".join(word.capitalize() for word in slug.split("-"))
+    return " ".join(slug.split("-"))          # 'max verstappen' (lowercased, normalize_name handles it)
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +60,7 @@ def scrape_web_standings(page: Page) -> list[dict]:
 
     Driver name is extracted from the <a> href slug rather than inner_text()
     because the site renders first/last name in separate <span> elements
-    joined by &nbsp; — which Python Playwright does not resolve into a space.
+    joined by &nbsp; which Python Playwright does not resolve into a space.
     """
     page.goto(BASE_URL_WEB)
     rows = page.locator("table tbody tr")
