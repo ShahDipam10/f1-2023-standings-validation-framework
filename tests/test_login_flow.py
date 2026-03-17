@@ -7,7 +7,7 @@ Run with:  python -m pytest tests/test_login_flow.py -v
 import os
 from dotenv import load_dotenv
 from playwright.sync_api import expect
-from conftest import F1_LOGIN_URL, dismiss_popups
+from conftest import F1_LOGIN_URL, dismiss_popups, wait_for_login_success
 
 load_dotenv()
 EMAIL    = os.getenv("F1_EMAIL")
@@ -27,7 +27,7 @@ def test_login_page_loads(page):
 
 
 def test_login_with_valid_credentials(page):
-    """Valid credentials should redirect to formula1.com."""
+    """Valid credentials should navigate away from the login page."""
     page.goto(F1_LOGIN_URL)
     page.wait_for_selector("input[name='Login']", timeout=10_000)
     dismiss_popups(page)
@@ -36,8 +36,12 @@ def test_login_with_valid_credentials(page):
     page.locator("input[name='Password']").fill(PASSWORD)
     page.get_by_role("button", name="Sign In").click()
 
-    page.wait_for_url("**/formula1.com/**", timeout=20_000)
-    assert "formula1.com" in page.url, f"Expected formula1.com, got: {page.url}"
+    # F1 redirects to account.formula1.com/#/en/ after login
+    # (NOT www.formula1.com) — we just check the hash changes
+    wait_for_login_success(page, timeout=20_000)
+    assert "/en/login" not in page.url, (
+        f"Still on login page after valid credentials — URL: {page.url}"
+    )
 
 
 def test_login_with_wrong_password(page):
@@ -51,7 +55,7 @@ def test_login_with_wrong_password(page):
     page.get_by_role("button", name="Sign In").click()
 
     page.wait_for_timeout(4_000)
-    assert "account.formula1.com" in page.url, (
+    assert "/en/login" in page.url, (
         "Should stay on login page after wrong password"
     )
     error = (
