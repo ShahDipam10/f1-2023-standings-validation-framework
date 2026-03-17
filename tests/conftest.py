@@ -1,114 +1,103 @@
 """
-conftest.py — shared Playwright fixtures for F1 login tests.
+conftest.py — shared fixtures for F1 login tests.
 
-The `authenticated_page` fixture logs in ONCE per test session and
-stores the browser storage state in a temp file. Every test that
-needs an authenticated page re-uses that state without re-logging in.
+DESIGN: All fixtures use sync_playwright directly so tests can be run
+with a plain:  python -m pytest tests/test_login_flow.py -v
+No --browser flag needed.
 """
 
 import os
-import json
-import tempfile
 import pytest
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
+from playwright.sync_api import sync_playwright, Page
 
 load_dotenv()
 
 F1_LOGIN_URL = "https://account.formula1.com/#/en/login"
 F1_HOME_URL  = "https://www.formula1.com/"
+EMAIL        = os.getenv("F1_EMAIL")
+PASSWORD     = os.getenv("F1_PASSWORD")
 
-EMAIL    = os.getenv("F1_EMAIL")
-PASSWORD = os.getenv("F1_PASSWORD")
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def dismiss_popups(page: Page) -> None:
-    """Dismiss any overlay that might block interaction.
+    """Dismiss cookie/consent popups.
 
-    Handles:
-    - Cookie consent banner  (Accept / Agree button)
-    - Survey / feedback modal (Close / X button)
-    - Generic overlay close buttons
+    The F1 consent banner lives inside an iframe — we must use
+    frame_locator to reach inside it.
     """
-    selectors = [
-        "button:has-text('Accept')",
-        "button:has-text('Accept All')",
-        "button:has-text('Agree')",
-        "button:has-text('Close')",
-        "button[aria-label='Close']",
-        "button[aria-label='close']",
-        "[data-cy='close-button']",
-    ]
-    for sel in selectors:
+    # 1. Iframe-based consent popup (most common on formula1.com)
+    try:
+        frame = page.frame_locator('iframe[id^="sp_message_iframe"]')
+        btn = frame.get_by_role("button", name="Accept All")
+        if btn.is_visible(timeout=3_000):
+            btn.click()
+            page.wait_for_timeout(500)
+            return
+    except Exception:
+        pass
+
+    # 2. Fallback — regular page-level buttons
+    for text in ["Accept All", "Accept", "Agree", "OK"]:
         try:
-            btn = page.locator(sel).first
-            if btn.is_visible(timeout=1500):
-                btn.click()
-                page.wait_for_timeout(500)
+            btn = page.get_by_role("button", name=text)
+            if btn.first.is_visible(timeout=1_000):
+                btn.first.click()
+                page.wait_for_timeout(400)
+                return
         except Exception:
             pass
 
 
-def do_login(page: Page) -> None:
-    """Fill in credentials and submit the login form."""
-    assert EMAIL and PASSWORD, (
-        "Credentials not found. Did you create a .env file? "
-        "See .env.example for the format."
-    )
-    page.goto(F1_LOGIN_URL)
-    page.wait_for_selector("input[name='Login']", timeout=10_000)
-
-    dismiss_popups(page)
-
-    page.locator("input[name='Login']").fill(EMAIL)
-    page.locator("input[name='Password']").fill(PASSWORD)
-    page.get_by_role("button", name="Sign In").click()
-
-    # Wait for redirect back to formula1.com after successful login
-    page.wait_for_url("**/formula1.com/**", timeout=15_000)
-
-
-# ── Fixtures ───────────────────────────────────────────────────────────────────
+# ── Session-scoped browser (launched once for all tests) ──────────────────────
 
 @pytest.fixture(scope="session")
-def browser_session():
-    """Single browser instance shared across the whole test session."""
+def _browser():
     with sync_playwright() as pw:
-        browser: Browser = pw.chromium.launch(headless=False)
+        browser = pw.chromium.launch(headless=False, slow_mo=200)
         yield browser
         browser.close()
 
 
-@pytest.fixture(scope="session")
-def auth_state_file(browser_session: Browser):
-    """Log in once, save storage state to a temp file, yield its path."""
-    context: BrowserContext = browser_session.new_context()
-    page: Page = context.new_page()
+# ── page fixture — replaces pytest-playwright's built-in one ──────────────────
 
-    do_login(page)
-
-    # Persist cookies + localStorage so other tests skip re-login
-    with tempfile.NamedTemporaryFile(
-        suffix=".json", delete=False, mode="w"
-    ) as f:
-        state = context.storage_state()
-        json.dump(state, f)
-        state_path = f.name
-
+@pytest.fixture
+def page(_browser):
+    """Fresh browser page for each test. No --browser flag needed."""
+    context = _browser.new_context()
+    p = context.new_page()
+    yield p
     context.close()
-    yield state_path
-
-    os.unlink(state_path)   # cleanup after session
 
 
-@pytest.fixture()
-def authenticated_page(browser_session: Browser, auth_state_file: str):
-    """Fresh page with pre-authenticated state loaded from storage."""
-    context: BrowserContext = browser_session.new_context(
-        storage_state=auth_state_file
+# ── authenticated_page — logs in once, reuses state ──────────────────────────
+
+@pytest.fixture(scope="session")
+def _auth_state(_browser):
+    """Login once per session and save storage state (cookies + localStorage)."""
+    assert EMAIL and PASSWORD, (
+        "Credentials missing! Create a .env file based on .env.example"
     )
-    page: Page = context.new_page()
-    yield page
+    context = _browser.new_context()
+    p = context.new_page()
+
+    p.goto(F1_LOGIN_URL)
+    p.wait_for_selector("input[name='Login']", timeout=15_000)
+    dismiss_popups(p)
+
+    p.locator("input[name='Login']").fill(EMAIL)
+    p.locator("input[name='Password']").fill(PASSWORD)
+    p.get_by_role("button", name="Sign In").click()
+    p.wait_for_url("**/formula1.com/**", timeout=20_000)
+
+    state = context.storage_state()
+    context.close()
+    return state
+
+
+@pytest.fixture
+def authenticated_page(_browser, _auth_state):
+    """Page pre-loaded with logged-in cookies — no re-login per test."""
+    context = _browser.new_context(storage_state=_auth_state)
+    p = context.new_page()
+    yield p
     context.close()
